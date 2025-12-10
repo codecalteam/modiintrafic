@@ -17,6 +17,15 @@
                     fontFamily: {
                         sans: ['Heebo', 'sans-serif'],
                     },
+                    keyframes: {
+                        fadeIn: {
+                            '0%': { opacity: '0' },
+                            '100%': { opacity: '1' },
+                        }
+                    },
+                    animation: {
+                        fadeIn: 'fadeIn 0.5s ease-out',
+                    }
                 }
             }
         }
@@ -30,6 +39,19 @@
         body { font-family: 'Heebo', sans-serif; background-color: #f8fafc; }
         .leaflet-popup-content-wrapper { text-align: right; direction: rtl; font-family: 'Heebo', sans-serif; }
         .leaflet-popup-tip { background: white; }
+        /* Loading Spinner */
+        .loader {
+            border: 4px solid #e2e8f0;
+            border-top: 4px solid #3b82f6;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 
     <!-- React & ReactDOM (React 18) -->
@@ -39,7 +61,10 @@
     <!-- Babel (for JSX) -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    <!-- Recharts (Fixed Version for Stability) -->
+    <!-- Prop-Types (Required dependency for Recharts UMD) -->
+    <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+
+    <!-- Recharts (Stable Version) -->
     <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
 
     <!-- Leaflet JS -->
@@ -55,11 +80,48 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo, useRef } = React;
-        // Destructure safely from global Recharts object
-        const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } = window.Recharts || {};
+        const { useState, useEffect, useMemo, useRef, Component } = React;
 
-        // --- Icons (Inline SVGs to remove dependency on lucide-react library in standalone HTML) ---
+        // --- Error Boundary Component ---
+        class ErrorBoundary extends Component {
+            constructor(props) {
+                super(props);
+                this.state = { hasError: false, error: null };
+            }
+
+            static getDerivedStateFromError(error) {
+                return { hasError: true, error };
+            }
+
+            componentDidCatch(error, errorInfo) {
+                console.error("Uncaught error:", error, errorInfo);
+            }
+
+            render() {
+                if (this.state.hasError) {
+                    return (
+                        <div className="min-h-screen flex items-center justify-center bg-red-50 p-4 text-center">
+                            <div className="bg-white p-8 rounded-xl shadow-lg max-w-lg w-full border border-red-200">
+                                <h2 className="text-2xl font-bold text-red-600 mb-4">אופס! משהו השתבש.</h2>
+                                <p className="text-gray-600 mb-4">אירעה שגיאה בטעינת הרכיב.</p>
+                                <div className="bg-gray-100 p-2 rounded text-left text-xs mb-4 overflow-auto max-h-32" dir="ltr">
+                                    {this.state.error && this.state.error.toString()}
+                                </div>
+                                <button 
+                                    onClick={() => window.location.reload()} 
+                                    className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition"
+                                >
+                                    רענן דף
+                                </button>
+                            </div>
+                        </div>
+                    );
+                }
+                return this.props.children;
+            }
+        }
+
+        // --- Icons ---
         const IconWrapper = ({ children, className }) => (
             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
                 {children}
@@ -112,12 +174,164 @@
             'קלה': '#EAB308',   
         };
 
-        // --- Main Component ---
+        // --- Leaflet Map Component ---
+        const LeafletMap = ({ data }) => {
+            const mapRef = useRef(null);
+
+            useEffect(() => {
+                if (!window.L || typeof window.L.map !== 'function' || !document.getElementById('map-container')) return;
+
+                if (mapRef.current) {
+                    mapRef.current.remove();
+                    mapRef.current = null;
+                }
+
+                try {
+                    const map = window.L.map('map-container').setView([31.895, 35.007], 13);
+                    mapRef.current = map;
+
+                    window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                        attribution: '© OpenStreetMap contributors',
+                        maxZoom: 19
+                    }).addTo(map);
+
+                    data.forEach(item => {
+                        if (item.x && item.y) {
+                            const [lon, lat] = convertITMtoWGS84(item.x, item.y);
+                            
+                            if (lat && lon && !isNaN(lat) && !isNaN(lon)) {
+                                const color = COLORS[item.severity] || COLORS['קלה'];
+                                
+                                const marker = window.L.circleMarker([lat, lon], {
+                                    radius: 8,
+                                    fillColor: color,
+                                    color: '#fff',
+                                    weight: 2,
+                                    opacity: 1,
+                                    fillOpacity: 0.8
+                                });
+
+                                const safeLocation = typeof item.location === 'string' ? item.location : 'מיקום לא ידוע';
+                                const safeSeverity = typeof item.severity === 'string' ? item.severity : 'לא ידוע';
+                                const safeYear = typeof item.year === 'string' || typeof item.year === 'number' ? item.year : '';
+                                const safeType = typeof item.type === 'string' ? item.type : '';
+
+                                const popupContent = `
+                                    <div dir="rtl" style="text-align:right; font-family:sans-serif;">
+                                        <strong>${safeLocation}</strong><br/>
+                                        <span style="color:${color}; font-weight:bold">${safeSeverity}</span> | ${safeYear}<br/>
+                                        <small>${safeType}</small>
+                                    </div>
+                                `;
+
+                                marker.bindPopup(popupContent).addTo(map);
+                            }
+                        }
+                    });
+                } catch (err) {
+                    console.error("Map initialization failed:", err);
+                }
+
+                return () => {
+                    if (mapRef.current) {
+                        mapRef.current.remove();
+                        mapRef.current = null;
+                    }
+                };
+            }, [data]);
+
+            return <div id="map-container" className="w-full h-full z-10" />;
+        };
+
+        // --- Main App Component ---
         const App = () => {
+            // State for loading libraries
+            const [libsLoaded, setLibsLoaded] = useState(false);
+            const [loadError, setLoadError] = useState(false);
+            
+            // Check libraries availability
+            useEffect(() => {
+                const checkLibs = () => {
+                    const isLeafletReady = window.L && typeof window.L.map === 'function';
+                    // Recharts needs global Recharts object AND BarChart component
+                    const isRechartsReady = window.Recharts && window.Recharts.BarChart;
+                    
+                    if (isLeafletReady && isRechartsReady) {
+                        return true;
+                    }
+                    return false;
+                };
+
+                // Immediate check
+                if (checkLibs()) {
+                    setLibsLoaded(true);
+                    return;
+                }
+
+                // Polling check
+                const interval = setInterval(() => {
+                    if (checkLibs()) {
+                        setLibsLoaded(true);
+                        clearInterval(interval);
+                    }
+                }, 200);
+
+                // Timeout after 10 seconds
+                const timeout = setTimeout(() => {
+                    clearInterval(interval);
+                    if (!checkLibs()) {
+                        setLoadError(true);
+                    }
+                }, 10000);
+
+                return () => {
+                    clearInterval(interval);
+                    clearTimeout(timeout);
+                };
+            }, []);
+
+            if (loadError) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center bg-red-50 text-red-600 p-4 text-center">
+                        <Icons.AlertTriangle className="h-12 w-12 mb-4" />
+                        <h2 className="text-xl font-bold mb-2">שגיאה בטעינת משאבים</h2>
+                        <p>לא ניתן היה לטעון את ספריות המיפוי והגרפים.</p>
+                        <p className="text-sm mt-2">אנא בדוק את חיבור האינטרנט שלך ורענן את הדף.</p>
+                        <button 
+                            onClick={() => window.location.reload()}
+                            className="mt-6 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition"
+                        >
+                            נסה שוב
+                        </button>
+                    </div>
+                );
+            }
+
+            if (!libsLoaded) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 text-slate-500">
+                        <div className="loader mb-4"></div>
+                        <p className="text-lg font-medium">טוען נתונים וספריות...</p>
+                    </div>
+                );
+            }
+
+            return <DashboardContent />;
+        };
+
+        const DashboardContent = () => {
+            // Safe destructuring with fallback
+            const Recharts = window.Recharts || {};
+            const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } = Recharts;
+            
+            // Double check critical components
+            if (!BarChart || !ResponsiveContainer) {
+                 return <div className="p-8 text-center text-red-500">שגיאה: רכיבי הגרפים לא נטענו כראוי.</div>;
+            }
+
             const [activeTab, setActiveTab] = useState('map');
             const [data, setData] = useState(INITIAL_DATA);
             const [isEditMode, setIsEditMode] = useState(false);
-            const [mapLibLoaded, setMapLibLoaded] = useState(false);
             const fileInputRef = useRef(null);
             
             const [selectedYear, setSelectedYear] = useState('all');
@@ -128,25 +342,6 @@
                 year: 2025, month: 'ינואר', severity: 'קלה', type: 'אחר', 
                 roadType: 'עירונית לא בצומת', location: '', x: 0, y: 0, users: {}
             });
-
-            useEffect(() => {
-                const checkAndSetLoaded = () => {
-                    if (window.L && typeof window.L.map === 'function') {
-                        setMapLibLoaded(true);
-                        return true;
-                    }
-                    return false;
-                };
-
-                if (!checkAndSetLoaded()) {
-                   const interval = setInterval(() => {
-                        if (checkAndSetLoaded()) {
-                            clearInterval(interval);
-                        }
-                    }, 200);
-                    setTimeout(() => clearInterval(interval), 10000);
-                }
-            }, []);
 
             const filteredData = useMemo(() => {
                 return data.filter(item => {
@@ -465,12 +660,7 @@
                             
                             {activeTab === 'map' && (
                                 <div className="relative w-full h-[600px] rounded-lg overflow-hidden bg-slate-100">
-                                    {(!mapLibLoaded) && (
-                                        <div className="absolute inset-0 flex items-center justify-center text-gray-500">
-                                            טוען מפה ורכיבי מיקום...
-                                        </div>
-                                    )}
-                                    {mapLibLoaded && <LeafletMap data={filteredData} />}
+                                    <LeafletMap data={filteredData} />
                                     
                                     <div className="absolute bottom-4 right-4 bg-white/90 p-3 rounded-lg shadow-md backdrop-blur-sm z-[400] text-sm">
                                         <h4 className="font-bold mb-2">מקרא מפה</h4>
@@ -484,7 +674,7 @@
                             )}
 
                             {activeTab === 'streets' && (
-                                <div className="p-6">
+                                <div className="p-6 animate-fadeIn">
                                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                                         <div className="lg:col-span-2">
                                             <h3 className="text-xl font-bold mb-4 text-gray-800">הרחובות המסוכנים ביותר</h3>
@@ -522,7 +712,7 @@
                             )}
 
                             {activeTab === 'intersections' && (
-                                <div className="p-6">
+                                <div className="p-6 animate-fadeIn">
                                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                                     <div className="lg:col-span-2">
                                         <h3 className="text-xl font-bold mb-4 text-gray-800">הצמתים המסוכנים ביותר</h3>
@@ -572,76 +762,8 @@
             );
         };
 
-        const LeafletMap = ({ data }) => {
-            const mapRef = useRef(null);
-
-            useEffect(() => {
-                if (!window.L || typeof window.L.map !== 'function' || !document.getElementById('map-container')) return;
-
-                if (mapRef.current) {
-                    mapRef.current.remove();
-                    mapRef.current = null;
-                }
-
-                try {
-                    const map = window.L.map('map-container').setView([31.895, 35.007], 13);
-                    mapRef.current = map;
-
-                    window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                        attribution: '© OpenStreetMap contributors',
-                        maxZoom: 19
-                    }).addTo(map);
-
-                    data.forEach(item => {
-                        if (item.x && item.y) {
-                            const [lon, lat] = convertITMtoWGS84(item.x, item.y);
-                            
-                            if (lat && lon && !isNaN(lat) && !isNaN(lon)) {
-                                const color = COLORS[item.severity] || COLORS['קלה'];
-                                
-                                const marker = window.L.circleMarker([lat, lon], {
-                                    radius: 8,
-                                    fillColor: color,
-                                    color: '#fff',
-                                    weight: 2,
-                                    opacity: 1,
-                                    fillOpacity: 0.8
-                                });
-
-                                const safeLocation = typeof item.location === 'string' ? item.location : 'מיקום לא ידוע';
-                                const safeSeverity = typeof item.severity === 'string' ? item.severity : 'לא ידוע';
-                                const safeYear = typeof item.year === 'string' || typeof item.year === 'number' ? item.year : '';
-                                const safeType = typeof item.type === 'string' ? item.type : '';
-
-                                const popupContent = `
-                                    <div dir="rtl" style="text-align:right; font-family:sans-serif;">
-                                        <strong>${safeLocation}</strong><br/>
-                                        <span style="color:${color}; font-weight:bold">${safeSeverity}</span> | ${safeYear}<br/>
-                                        <small>${safeType}</small>
-                                    </div>
-                                `;
-
-                                marker.bindPopup(popupContent).addTo(map);
-                            }
-                        }
-                    });
-                } catch (err) {
-                    console.error("Map initialization failed:", err);
-                }
-
-                return () => {
-                    if (mapRef.current) {
-                        mapRef.current.remove();
-                        mapRef.current = null;
-                    }
-                };
-            }, [data]);
-
-            return <div id="map-container" className="w-full h-full z-10" />;
-        };
-
         const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+        root.render(<ErrorBoundary><App /></ErrorBoundary>);
     </script>
 </body>
 </html>
